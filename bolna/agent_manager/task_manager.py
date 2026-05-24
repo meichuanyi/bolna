@@ -783,6 +783,22 @@ class TaskManager(BaseManager):
         except Exception as e:
             logger.debug(f"Failed to invalidate response chain: {e}")
 
+    def _set_interruption_hint(self, heard_text):
+        try:
+            llm_agent = self.tools.get("llm_agent")
+            if llm_agent and hasattr(llm_agent, "llm"):
+                llm_agent.llm.set_interruption_hint(heard_text)
+        except Exception as e:
+            logger.debug(f"Failed to set interruption hint: {e}")
+
+    def _cancel_in_flight_llm_response(self):
+        try:
+            llm_agent = self.tools.get("llm_agent")
+            if llm_agent and hasattr(llm_agent, "llm"):
+                llm_agent.llm.cancel_in_flight_response()
+        except Exception as e:
+            logger.debug(f"cancel_in_flight_response failed: {e}")
+
     def _inject_language_instruction(self, messages: list) -> list:
         """Inject language instruction into messages based on detected language."""
         lang = self.language_detector.dominant_language
@@ -1853,7 +1869,7 @@ class TaskManager(BaseManager):
                 self.conversation_history.sync_interim_turn_after_interruption(
                     target_turn_id, response_heard, self.update_transcript_for_interruption
                 )
-            self._invalidate_response_chain()
+            self._set_interruption_hint(response_heard)
 
         except Exception as e:
             logger.error(f"sync_history failed: {e}")
@@ -1865,6 +1881,7 @@ class TaskManager(BaseManager):
         current_ts = time.time()
         logger.info(f"Cleaning up downstream task")
         start_time = time.time()
+        self._cancel_in_flight_llm_response()
         await self.tools["output"].handle_interruption()
         await self.tools["synthesizer"].handle_interruption()
 
@@ -3659,7 +3676,6 @@ class TaskManager(BaseManager):
             # For precise transcripting we need to reconcile that in-flight turn
             # before appending the next user utterance, otherwise the full stored
             # assistant text can leak into history even when only part of it was heard.
-            self._invalidate_response_chain()
             original_message = transcriber_message
             transcriber_message = self.conversation_history.pop_and_merge_user(transcriber_message)
             if transcriber_message != original_message:
